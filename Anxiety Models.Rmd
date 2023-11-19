@@ -1,0 +1,196 @@
+---
+title: "Group Project Anxiety Script"
+output: html_document
+---
+
+## This file contains the script for the anxiety models detailed in the Report. 
+
+```{r}
+library(tidyverse)
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(gridExtra)
+library(readr)
+library(tree)
+library(ROCR)
+library(randomForest)
+library(car)
+```
+
+## Load data for classification 
+```{r}
+df <- read.csv('predictors.csv', sep = ',', header = T, stringsAsFactors = T)
+```
+
+## Spilt data for anxiety classification
+```{r}
+ALH <- df[df$anxiety_label=='High',] # extract all high scorers on anxiety
+dim(ALH) # check dimensions 
+trainH <- sample(1:15098, 5000) # assign 5000 high scorers on anxiety to training data (training data = 10000, test data = 24583)
+ALH_train <- ALH[trainH,]
+ALH_test <- ALH[-trainH,]
+
+ALL <- df[df$anxiety_label=='Low',] # extract all low scorers on anxiety
+dim(ALL) # check dimensions 
+trainL <- sample(1:15336) # assign all low scorers on anxiety to training data 
+
+Atrain <- bind_rows(ALH_train, ALL[trainL[1:5000],]) # bind the rows from two data sets together; assign 5000 low scorers on anxiety to training data
+dim(Atrain) # check dimensions 
+count(Atrain, 'anxiety_label') # confirm 1:1 ratio of high scorers to low scorers
+Atrain <- subset(Atrain, select=-c(depression_label, stress_label)) # remove depression_label and stress_label
+write.csv(Atrain, row.names=F, 'anxietyTrain.csv')
+
+Atest <- bind_rows(ALH_test, ALL[trainL[5001:15336],]) # bind the rows from two data sets together; assign remainder of low scorers on anxiety to testing data
+dim(Atest) # check dimensions 
+count(Atest, 'anxiety_label') # check ratio of high scorers to low scorers
+Atest <- subset(Atest, select=-c(depression_label, stress_label)) # remove depression_label and stress_label
+write.csv(Atest, row.names=F, 'anxietyTest.csv')
+
+rm(df, ALL, ALH, ALH_test, ALH_train, Atest, Atrain, trainH, trainL) # remove objects 
+```
+
+## Import training and test data
+```{r}
+Atrain <- read.csv('anxietyTrain.csv', sep = ',', header = T, stringsAsFactors = T)
+Atest <- read.csv('anxietyTest.csv', sep = ',', header = T, stringsAsFactors = T)
+```
+
+## Construct decision tree for anxiety
+```{r}
+tree_anxiety <- tree(anxiety_label~. -anxiety_label, data=Atrain)
+summary(tree_anxiety)
+
+cv.tree(tree_anxiety) # prune tree using cross validation 
+cv.tree(tree_anxiety, K=10) # prune tree using 10-fold cross validation 
+# both CV and 10-fold CV confirms that the tree with 4 terminal nodes obtains the minimum entropy (i.e., the minimum deviance)
+
+plot(tree_anxiety, col='black', lwd=3) # plot tree
+text(tree_anxiety, col='black',)
+title('Decision Tree for Anxiety', cex=2)
+```
+
+## Test performance of decision tree on testing dataset
+```{r}
+tree.pred <- predict(tree_anxiety, Atest, type='vector')
+tree.predTest = tree.pred[,2]
+
+## Test performance of random forest on testing dataset
+contrasts(Atest$anxiety_label) # High = 0, Low = 1
+tree.predDiction <- rep('High', 20434)
+tree.predDiction[tree.predTest>.5]='Low' 
+table(tree.predDiction, Atest$anxiety_label)
+
+prediction.treeTest=prediction(tree.predTest, Atest$anxiety_label)
+
+rocTest=performance(prediction.treeTest, measure="tpr", x.measure="fpr")
+
+plot(rocTest, lwd=2, colorkey=T, colorize=T, main="ROC Curve for Decision Tree") # plot ROC curve
+abline(0,1) 
+
+performance(prediction.treeTest, measure="auc")@y.values # calculate area under curve
+```
+
+## Construct random forest for anxiety 
+```{r}
+forest_anxiety <- randomForest(
+  anxiety_label~., data=Atrain, importance=TRUE
+)
+
+forest_anxiety
+
+varImpPlot(forest_anxiety, bg='blue') # plot variable importance plots for random forest
+```
+
+## Test performance of random forest on testing dataset
+```{r}
+forest.pred <- predict(forest_anxiety, Atest, type='prob')
+forest.predTest <- forest.pred[,2]
+forest.predTest <- as.numeric(forest.predTest)
+
+## Test performance of random forest on testing dataset
+table(forest.pred, Atest$anxiety_label)
+(2761+3245)/(2761+3245+7337+7091) # misclassification rate for the testing data
+(7337+7091)/(2761+3245+7337+7091) # accuracy rate for the testing data
+
+prediction.forestTest=prediction(forest.predTest, Atest$anxiety_label)
+
+rocTest=performance(prediction.forestTest, measure="tpr", x.measure="fpr")
+
+plot(rocTest, lwd=2, colorkey=T, colorize=T, main="ROC Curve for Random Forest")
+abline(0,1)
+
+performance(prediction.forestTest, measure="auc")@y.values # calculate area under curve
+```
+
+## Fit logistic regression classifier for anxiety (including all explanatory variables)
+```{r}
+glm_anxiety <- glm(anxiety_label ~ education + urban + gender + engnat + age + hand + religion + orientation + race + voted + married + familysize + extraversion + agreeableness + emotional_stability + conscientiousness + openness, data=Atrain, family=binomial)
+
+summary(glm_anxiety)
+```
+
+## Remove insignificant variables step-wise
+```{r}
+glm_anxiety <- glm(anxiety_label ~ education + gender + engnat + age + hand + religion + orientation + race + voted + married + familysize + extraversion + agreeableness + emotional_stability + conscientiousness + openness, data=Atrain, family=binomial) # Remove urban
+summary(glm_anxiety) # Check significance
+
+glm_anxiety <- glm(anxiety_label ~ education + gender + age + hand + religion + orientation + race + voted + married + familysize + extraversion + agreeableness + emotional_stability + conscientiousness + openness, data=Atrain, family=binomial) # Remove engnat
+summary(glm_anxiety) # Check significance
+
+glm_anxiety <- glm(anxiety_label ~ education + gender + age + religion + orientation + race + voted + married + familysize + extraversion + agreeableness + emotional_stability + conscientiousness + openness, data=Atrain, family=binomial) # Remove hand
+summary(glm_anxiety) # Check significance
+
+glm_anxiety <- glm(anxiety_label ~ education + gender + age + religion + orientation + voted + married + familysize + extraversion + agreeableness + emotional_stability + conscientiousness + openness, data=Atrain, family=binomial) # Remove race
+summary(glm_anxiety) # Check significance
+
+glm_anxiety <- glm(anxiety_label ~ education + gender + age + religion + orientation + married + familysize + extraversion + agreeableness + emotional_stability + conscientiousness + openness, data=Atrain, family=binomial) # Remove voted
+summary(glm_anxiety) # Check significance
+
+glm_anxiety <- glm(anxiety_label ~ education + gender + age + religion + orientation + familysize + extraversion + agreeableness + emotional_stability + conscientiousness + openness, data=Atrain, family=binomial) # Remove married
+
+summary(glm_anxiety) # Check significance
+glm_anxiety$coefficients # Call coefficients
+```
+
+## Examine multicollinearity 
+```{r}
+vif_values <- vif(glm_anxiety)
+view(vif_values)
+```
+
+## Test performance of logistic regression classifier on testing dataset
+```{r}
+glm.pred <- predict(glm_anxiety, Atest, type='response')
+summary(glm.pred)
+contrasts(anxiety_label) # High = 0, Low = 1
+glm.predDiction <- rep('High', 20434)
+glm.predDiction[glm.pred>.5]='Low' 
+table(glm.predDiction, Atest$anxiety_label)
+(2599+3365)/(2599+3365+7499+6971) # misclassification rate for the testing data
+(7499+6971)/(2599+3365+7499+6971) # accuracy rate for the testing data
+```
+
+## Plot ROC curve
+```{r}
+glm.predTest = glm.pred
+
+prediction.glmTest=prediction(glm.predTest, Atest$anxiety_label)
+
+rocTest=performance(prediction.glmTest, measure="tpr", x.measure="fpr")
+
+plot(rocTest, lwd=2, colorkey=T, colorize=T, main="ROC Curve for Logistic Regression")
+abline(0,1)
+
+performance(prediction.glmTest, measure="auc")@y.values # calculate area under curve
+```
+
+## Plot ROC curves of all models 
+```{r}
+pred3=prediction(data.frame(tree.predTest,forest.predTest,glm.predTest), data.frame(Atest$anxiety_label,
+Atest$anxiety_label,Atest$anxiety_label))
+roc3=performance(pred3, measure ="tpr", x.measure ="fpr")
+plot(roc3, col=as.list(c("red","blue","green")), main="ROC Curves of Anxiety Models on Testing Data")
+legend(0.8, 0.4, c("tree","forest", "glm"), col=c("red","blue","green"), lty=c(1,1,1))
+abline(0,1)
+```

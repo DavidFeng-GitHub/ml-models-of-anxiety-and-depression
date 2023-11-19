@@ -1,0 +1,208 @@
+---
+title: "Group Project Depression Script"
+output: html_document
+---
+
+## This file contains the script for the depression models detailed in the Report. 
+
+```{r}
+library(tidyverse)
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(gridExtra)
+library(readr)
+library(tree)
+library(ROCR)
+library(randomForest)
+library(car)
+```
+
+## Load data for classification 
+```{r}
+df <- read.csv('predictors.csv', sep = ',', header = T, stringsAsFactors = T)
+```
+
+## Spilt data for depression classification
+```{r}
+DLH <- df[df$depression_label=='High',] # extract all high scorers on depression
+dim(DLH) # check dimensions 
+trainH <- sample(1:15193, 5000) # assign 5000 high scorers on depression to training data (training data = 10000, test data = 24583)
+DLH_train <- DLH[trainH,]
+DLH_test <- DLH[-trainH,]
+
+DLL <- df[df$depression_label=='Low',] # extract all low scorers on depression
+dim(DLL) # check dimensions 
+trainL <- sample(1:15241) # assign all low scorers on depression to training data 
+
+Dtrain <- bind_rows(DLH_train, DLL[trainL[1:5000],]) # bind the rows from two data sets together; assign 5000 low scorers on depression to training data
+dim(Dtrain) # check dimensions 
+count(Dtrain, 'depression_label') # confirm 1:1 ratio of high scorers to low scorers
+Dtrain <- subset(Dtrain, select=-c(anxiety_label, stress_label)) # remove anxiety_label and stress_label
+write.csv(Dtrain, row.names=F, 'depressionTrain.csv')
+
+Dtest <- bind_rows(DLH_test, DLL[trainL[5001:15241],]) # bind the rows from two data sets together; assign remainder of low scorers on depression to testing data
+dim(Dtest) # check dimensions 
+count(Dtest, 'depression_label') # check ratio of high scorers to low scorers
+Dtest <- subset(Dtest, select=-c(anxiety_label, stress_label)) # remove anxiety_label and stress_label
+write.csv(Dtest, row.names=F, 'depressionTest.csv')
+
+rm(df, DLL, DLH, DLH_test, DLH_train, Dtest, Dtrain, trainH, trainL) # remove objects 
+```
+
+## Import training and test data
+```{r}
+Dtrain <- read.csv('depressionTrain.csv', sep = ',', header = T, stringsAsFactors = T)
+Dtest <- read.csv('depressionTest.csv', sep = ',', header = T, stringsAsFactors = T)
+```
+
+## Construct decision tree for depression
+```{r}
+tree_depression <- tree(depression_label~. -depression_label, data=Dtrain)
+summary(tree_depression)
+
+cv.tree(tree_depression) # prune tree using cross validation 
+cv.tree(tree_depression, K=10) # prune tree using 10-fold cross validation 
+# both CV and 10-fold CV confirms that the tree with 4 terminal nodes obtains the minimum entropy (i.e., the minimum deviance)
+
+plot(tree_depression, col='black', lwd=3) # plot tree
+text(tree_depression, col='black',)
+title('Decision Tree for Depression', cex=2)
+```
+
+## Test performance of decision tree on testing dataset
+```{r}
+tree.pred <- predict(tree_depression, Dtest, type='vector')
+tree.predTest = tree.pred[,2]
+
+## Test performance of random forest on testing dataset
+contrasts(Dtest$depression_label) # High = 0, Low = 1
+tree.predDiction <- rep('High', 20434)
+tree.predDiction[tree.predTest>.5]='Low' 
+table(tree.predDiction, Dtest$depression_label)
+
+prediction.treeTest=prediction(tree.predTest, Dtest$depression_label)
+
+rocTest=performance(prediction.treeTest, measure="tpr", x.measure="fpr")
+
+plot(rocTest, lwd=2, colorkey=T, colorize=T, main="ROC Curve for Decision Tree") # plot ROC curve
+abline(0,1) 
+
+performance(prediction.treeTest, measure="auc")@y.values # calculate area under curve
+```
+
+## Construct random forest for depression 
+```{r}
+forest_depression <- randomForest(
+  depression_label~., data=Dtrain, importance=TRUE
+)
+
+forest_depression
+
+varImpPlot(forest_depression, bg='blue') # plot variable importance plots for random forest
+```
+
+## Test performance of random forest on testing dataset
+```{r}
+forest.pred <- predict(forest_depression, Dtest, type='prob')
+forest.predTest <- forest.pred[,2]
+forest.predTest <- as.numeric(forest.predTest)
+
+## Test performance of random forest on testing dataset
+table(forest.pred, Dtest$depression_label)
+(3161+2971)/(3161+2971+7222+7080) # misclassification rate for the testing data
+(7222+7080)/(3161+2971+7222+7080) # accuracy rate for the testing data
+
+prediction.forestTest=prediction(forest.predTest, Dtest$depression_label)
+
+rocTest=performance(prediction.forestTest, measure="tpr", x.measure="fpr")
+
+plot(rocTest, lwd=2, colorkey=T, colorize=T, main="ROC Curve for Random Forest")
+abline(0,1)
+
+performance(prediction.forestTest, measure="auc")@y.values # calculate area under curve
+```
+
+## Fit logistic regression classifier for depression (including all explanatory variables)
+```{r}
+glm_depression <- glm(depression_label ~ education + urban + gender + engnat + age + hand + religion + orientation + race + voted + married + familysize + extraversion + agreeableness + emotional_stability + conscientiousness + openness, data=Dtrain, family=binomial)
+
+summary(glm_depression)
+```
+
+## Remove insignificant variables step-wise
+```{r}
+glm_depression <- glm(depression_label ~ education + gender + engnat + age + hand + religion + orientation + race + voted + married + familysize + extraversion + agreeableness + emotional_stability + conscientiousness + openness, data=Dtrain, family=binomial) # Remove urban
+summary(glm_depression) # Check significance
+
+glm_depression <- glm(depression_label ~ education + engnat + age + hand + religion + orientation + race + voted + married + familysize + extraversion + agreeableness + emotional_stability + conscientiousness + openness, data=Dtrain, family=binomial) # Remove gender
+summary(glm_depression) # Check significance
+
+glm_depression <- glm(depression_label ~ education + age + hand + religion + orientation + race + voted + married + familysize + extraversion + agreeableness + emotional_stability + conscientiousness + openness, data=Dtrain, family=binomial) # Remove engnat
+summary(glm_depression) # Check significance
+
+glm_depression <- glm(depression_label ~ education + hand + religion + orientation + race + voted + married + familysize + extraversion + agreeableness + emotional_stability + conscientiousness + openness, data=Dtrain, family=binomial) # Remove age
+summary(glm_depression) # Check significance
+
+glm_depression <- glm(depression_label ~ education + religion + orientation + race + voted + married + familysize + extraversion + agreeableness + emotional_stability + conscientiousness + openness, data=Dtrain, family=binomial) # Remove hand
+summary(glm_depression) # Check significance
+
+glm_depression <- glm(depression_label ~ education + orientation + race + voted + married + familysize + extraversion + agreeableness + emotional_stability + conscientiousness + openness, data=Dtrain, family=binomial) # Remove religion
+summary(glm_depression) # Check significance
+
+glm_depression <- glm(depression_label ~ education + race + voted + married + familysize + extraversion + agreeableness + emotional_stability + conscientiousness + openness, data=Dtrain, family=binomial) # Remove orientation
+summary(glm_depression) # Check significance
+
+glm_depression <- glm(depression_label ~ education + voted + married + familysize + extraversion + agreeableness + emotional_stability + conscientiousness + openness, data=Dtrain, family=binomial) # Remove race
+summary(glm_depression) # Check significance
+
+glm_depression <- glm(depression_label ~ education + married + familysize + extraversion + agreeableness + emotional_stability + conscientiousness + openness, data=Dtrain, family=binomial) ## Remove voted
+summary(glm_depression) # Check significance
+
+glm_depression <- glm(depression_label ~ education + married + extraversion + agreeableness + emotional_stability + conscientiousness + openness, data=Dtrain, family=binomial) # Remove familysize
+
+summary(glm_depression) # Check significance
+glm_depression$coefficients # Call coefficients
+```
+## Examine multicollinearity 
+```{r}
+vif_values <- vif(glm_depression)
+view(vif_values)
+```
+
+## Test performance of logistic regression classifier on testing dataset
+```{r}
+glm.pred <- predict(glm_depression, Dtest, type='response')
+summary(glm.pred)
+contrasts(depression_label) # High = 0, Low = 1
+glm.predDiction <- rep('High', 20434)
+glm.predDiction[glm.pred>.5]='Low' 
+table(glm.predDiction, Dtest$depression_label)
+(3204+2847)/(3204+2847+7346+7037) # misclassification rate for the testing data
+(7346+7037)/(3204+2847+7346+7037) # accuracy rate for the testing data
+```
+
+## Plot ROC curve
+```{r}
+glm.predTest = glm.pred
+
+prediction.glmTest=prediction(glm.predTest, Dtest$depression_label)
+
+rocTest=performance(prediction.glmTest, measure="tpr", x.measure="fpr")
+
+plot(rocTest, lwd=2, colorkey=T, colorize=T, main="ROC Curve for Logistic Regression")
+abline(0,1)
+
+performance(prediction.glmTest, measure="auc")@y.values # calculate area under curve
+```
+
+## Plot ROC curves of all models 
+```{r}
+pred3=prediction(data.frame(tree.predTest,forest.predTest,glm.predTest), data.frame(Dtest$depression_label,
+Dtest$depression_label,Dtest$depression_label))
+roc3=performance(pred3, measure ="tpr", x.measure ="fpr")
+plot(roc3, col=as.list(c("red","blue","green")), main="ROC Curves of Depression Models on Testing Data")
+legend(0.8, 0.4, c("tree","forest", "glm"), col=c("red","blue","green"), lty=c(1,1,1))
+abline(0,1)
+```
+
